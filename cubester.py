@@ -24,14 +24,47 @@ bl_info = {
     "category": "Add Mesh"
 }
 
-from bpy.types import Scene, Object, Panel, Operator
-from bpy.props import PointerProperty
+from bpy.types import Scene, Object, Panel, Operator, PropertyGroup
+from bpy.props import PointerProperty, IntProperty, EnumProperty, FloatProperty
 from bpy.utils import register_class, unregister_class
 from bpy import app
 
 
 def frame_handler(scene):
     pass
+
+
+# PROPERTIES ----------------------------------------------------
+class CSSceneProperties(PropertyGroup):
+    row_count: IntProperty(
+        name="# Rows", min=1, default=50,
+        description="The number of rows in the output mesh"
+    )
+
+    column_count: IntProperty(
+        name="# Columns", min=1, default=100,
+        description="The number of columns in the output mesh"
+    )
+
+    xy_size: FloatProperty(
+        name="X-Y Size", min=0.0001, default=0.01,
+        unit="LENGTH", description="The X-Y size of each mesh instance"
+    )
+
+    instance_spacing: FloatProperty(
+        name="Instance Spacing", min=0, default=0,
+        unit="LENGTH", description="The spacing between each row and column"
+    )
+
+    mesh_type: EnumProperty(
+        name="Mesh Type",
+        items=(("point", "Point", ""), ("block", "Block", ""), ("object", "Object", "")),
+        description="The style of mesh to generate", default="block"
+    )
+
+    source_object: PointerProperty(
+        name="Source Object", type=Object
+    )
 
 
 class CSPanel(Panel):
@@ -54,6 +87,7 @@ class CSLoadImageSequence(Operator):
 
 
 classes = [
+    CSSceneProperties,
     CSPanel, 
     CSLoadImageSequence,
 ]
@@ -63,10 +97,17 @@ def register():
     for cls in classes:
         register_class(cls)
 
+    Scene.cs_properties = PointerProperty(
+        name="CubeSter Scene Properties",
+        type=CSSceneProperties
+    )
+
     app.handlers.frame_change_pre.append(frame_handler)
 
 
 def unregister():
+    del Scene.cs_properties
+
     for cls in classes:
         unregister_class(cls)
 
