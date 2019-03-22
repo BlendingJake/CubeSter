@@ -13,6 +13,10 @@
 
 # Original Author = Jacob Morris
 # URL = github.com/BlendingJake/CubeSter
+from operator import itemgetter
+
+import bpy
+from bpy.path import abspath
 
 bl_info = {
     "name": "CubeSter",
@@ -24,10 +28,13 @@ bl_info = {
     "category": "Add Mesh"
 }
 
-from bpy.types import Scene, Object, Panel, Operator, PropertyGroup
-from bpy.props import PointerProperty, IntProperty, EnumProperty, FloatProperty
+from bpy.types import Scene, Object, Panel, Operator, PropertyGroup, Image
+from bpy.props import PointerProperty, IntProperty, EnumProperty, FloatProperty, StringProperty, BoolProperty, \
+    CollectionProperty
 from bpy.utils import register_class, unregister_class
 from bpy import app
+from pathlib import Path
+from os import walk
 
 
 def frame_handler(scene):
@@ -35,7 +42,14 @@ def frame_handler(scene):
 
 
 # PROPERTIES ----------------------------------------------------
+class CSImageProperties(PropertyGroup):
+    image: PointerProperty(
+        type=Image
+    )
+
+
 class CSSceneProperties(PropertyGroup):
+    # GENERAL
     row_count: IntProperty(
         name="# Rows", min=1, default=50,
         description="The number of rows in the output mesh"
@@ -66,6 +80,103 @@ class CSSceneProperties(PropertyGroup):
         name="Source Object", type=Object
     )
 
+    # SOURCE
+    source_type: EnumProperty(
+        name="Source Type",
+        items=(("image", "Image", ""), ("image_sequence", "Image Sequence", ""), ("audio", "Audio File", ""),
+               ("random", "Random", "")),
+        default="image", description="The source for generating the mesh heights"
+    )
+
+    image: PointerProperty(
+        name="Image", type=Image, description="The image to use for generating the heights and colors"
+    )
+
+    # image sequence
+    base_name: StringProperty(
+        name="Base Name", default="", description="The base name shared by all images in the sequence"
+    )
+
+    image_start_offset: IntProperty(
+        name="Start Image Offset", min=0, default=0,
+        description="Skip this many images at the beginning of the list of images found"
+    )
+
+    image_step: IntProperty(
+        name="Image Step", min=1, default=1, description="Step past this many images. Select and use one. Repeat."
+    )
+
+    image_end_offset: IntProperty(
+        name="End Image Offset", min=0, default=0,
+        description="Skip this many images at the end of the list of images found"
+    )
+
+    image_sequence_images: CollectionProperty(
+        type=CSImageProperties
+    )
+
+    # audio file
+    audio_file: StringProperty(
+        name="Audio File", subtype="FILE_PATH"
+    )
+
+    min_freq: IntProperty(
+        name="Minimum Frequency", min=0, default=20
+    )
+
+    max_freq: IntProperty(
+        name="Maximum Frequency", min=0, default=20_000
+    )
+
+    audio_row_style: EnumProperty(
+        name="Row Style",
+        items=(("by_delay", "Divide By Delay", ""), ("by_freq", "Divide By Frequency", ""))
+    )
+
+    delay_amount: IntProperty(
+        name="Frame Delay", min=1, default=5,
+        description="Number of frames of delay between each row"
+    )
+
+    # random
+    random_layer_count: IntProperty(
+        name="# of Layers", min=1, default=1
+    )
+
+    # SCALING
+    height: FloatProperty(
+        name="Height", min=0, default=0.25,
+        description="Height of max value"
+    )
+
+    # LAYERS
+    create_layers: BoolProperty(
+        name="Create Layers?", default=False
+    )
+
+    layer_style: EnumProperty(
+        name="Layer Style",
+        items=(("stacked", "Stacked", ""), ("distinct", "Distinct", "")),
+        default="stacked"
+    )
+
+    layer_offset: FloatProperty(
+        name="Layer Offset", min=0, default=0
+    )
+
+    centering: EnumProperty(
+        name="Centering",
+        items=(("none", "None", ""), ("overall", "Overall", ""), ("per_layer", "Per Layer", "")),
+        default="none"
+    )
+
+    # COLORING
+    coloring_type: EnumProperty(
+        name="Coloring Type",
+        items=(("from_source", "From Source", ""), ("linear", "Linear", ""), ("random", "Random", "")),
+        default="from_source"
+    )
+
 
 class CSPanel(Panel):
     bl_idname = "OBJECT_PT_cs_panel"
@@ -75,6 +186,94 @@ class CSPanel(Panel):
 
     def draw(self, context):
         layout = self.layout
+        props = context.scene.cs_properties
+
+        # GENERAL
+        box = layout.box()
+        box.label(text="General")
+
+        row = box.row()
+        row.prop(props, "row_count")
+        row.prop(props, "column_count")
+
+        box.separator()
+        box.prop(props, "mesh_type")
+
+        if props.mesh_type == "object":
+            box.prop_search(props, "source_object", context.scene, "objects")
+        else:
+            box.prop(props, "xy_size")
+
+        if props.mesh_type != "point":
+            box.prop(props, "instance_spacing")
+
+        # SOURCE
+        box = layout.box()
+        box.label(text="Source")
+        box.prop(props, "source_type")
+        box.separator()
+
+        if props.source_type == "image":
+            box.template_ID(props, "image", open="image.open")
+        elif props.source_type == "image_sequence":
+            box.template_ID(props, "image", open="image.open")
+            box.prop(props, "base_name")
+            box.operator("object.cs_load_image_sequence", icon="WINDOW")
+
+            box.separator()
+            box.prop(props, "image_start_offset")
+            box.prop(props, "image_step")
+            box.prop(props, "image_end_offset")
+        elif props.source_type == "audio":
+            box.prop(props, "audio_file")
+
+            box.separator()
+            row = box.row()
+            row.prop(props, "min_freq")
+            row.prop(props, "max_freq")
+
+            box.separator()
+            box.prop(props, "audio_row_style")
+
+            if props.audio_row_style == "by_delay":
+                box.prop(props, "delay_amount")
+        else:
+            box.prop(props, "random_layer_count")
+
+        # SCALING
+        box = layout.box()
+        box.label(text="Scaling")
+        box.prop(props, "height")
+
+        # LAYERS
+        box = layout.box()
+        box.label(text="Layers")
+        box.prop(props, "create_layers", icon="NODE_COMPOSITING")
+
+        if props.create_layers:
+            box.separator()
+            box.prop(props, "layer_style")
+            box.prop(props, "layer_offset")
+            box.prop(props, "centering")
+
+        # COLORING
+        box = layout.box()
+        box.label(text="Coloring")
+        box.prop(props, "coloring_type")
+
+        layout.separator()
+        layout.operator("object.cs_generate_mesh", icon="SHADERFX")
+
+
+class CSGenerateMesh(Operator):
+    bl_idname = "object.cs_generate_mesh"
+    bl_label = "Generate Mesh"
+    bl_description = "Generate CubeSter Mesh"
+
+    def execute(self, context):
+        props = context.scene.cs_properties
+
+        return {"FINISHED"}
 
 
 class CSLoadImageSequence(Operator):
@@ -83,13 +282,43 @@ class CSLoadImageSequence(Operator):
     bl_description = "Load CubeSter Image Sequence"
 
     def execute(self, context):
+        props = context.scene.cs_properties
+
+        if props.image and props.base_name:
+            base_path = Path(abspath(props.image.filepath)).parent
+
+            # collect any matching files and their paths
+            temp_data = {}
+            for root, _, files in walk(base_path):
+                for file in files:
+                    if file.startswith(props.base_name):
+                        temp_data[file] = str(Path(root) / file)
+
+            ordered = sorted(temp_data.items(), key=itemgetter(0))  # sort the items by the file name
+
+            # load and store any matching images
+            props.image_sequence_images.clear()
+            for i in range(props.image_start_offset, len(ordered) - props.image_end_offset, props.image_step):
+                name, path = ordered[i]
+                if name not in bpy.data.images:
+                    bpy.data.images.load(path)
+
+                item = props.image_sequence_images.add()
+                item.image = bpy.data.images[name]
+
+            self.report({"INFO"}, "Loaded {} images".format(len(props.image_sequence_images)))
+
+        else:
+            self.report({"WARNING"}, "There must be an image selected to load an image sequence")
+
         return {"FINISHED"}
 
 
 classes = [
+    CSImageProperties,
     CSSceneProperties,
-    CSPanel, 
-    CSLoadImageSequence,
+    CSPanel,
+    CSGenerateMesh,
 ]
 
 
