@@ -34,7 +34,87 @@ from bpy.props import PointerProperty, IntProperty, EnumProperty, FloatProperty,
 from bpy.utils import register_class, unregister_class
 from bpy import app
 from pathlib import Path
+from typing import List, Tuple
 from os import walk
+from random import uniform
+
+
+CACHE = {}  # keep track of loaded images data to allow faster creation the second time around
+
+
+def create_random_data(rows: int, columns: int, layer_count) -> List[List[Tuple[list, float]]]:
+    """
+    Create the random heights and colors needed.
+    :param rows: the number of rows to create data for
+    :param columns: the number of columns to create data for
+    :param layer_count: the number of layers to create data for
+    :return: Layers[Rows[Columns[color, height]]]
+    """
+    layers = []
+    for _ in range(layer_count):
+        layers.append([])
+
+        for r in range(rows):
+            layers[-1].append([])
+
+            for c in range(columns):
+                height = uniform(0, 1)
+                color = [0, 0, 0, 0]  # TODO: allow user to specify how to generate colors
+
+                layers[-1][-1].append((color, height))
+
+
+def collect_image_data(image: Image, rows: int, columns: int, multiple_layers: bool) -> List[List[Tuple[list, float]]]:
+    """
+    Collect height and color data from the given image
+    :param image: the image to get the data from
+    :param rows: the number of rows to collect data on
+    :param columns: the number of columns to collect data on
+    :param multiple_layers: whether to split the color channels in distinct layers or to combine them into one
+    :return: Layers[Rows[Columns[color, height]]]
+    """
+    if image.name in CACHE:
+        pixels = CACHE[image.name]
+    else:
+        pixels = list(image.pixels)
+        CACHE[image.name] = pixels
+
+    width, height = image.size
+    row_step, col_step = height // rows, width // columns
+    channels = image.channels
+    padding = [0] * (4 - channels)  # amount of padding needed to make sure all colors are RGBA
+
+    layers = []
+    for ch in range(channels if multiple_layers else 1):
+        layers.append([])
+
+        r = 0
+        for _ in range(rows):  # manually run loop to ensure that exactly the right number of rows is created
+            layers[-1].append([])
+
+            c = 0
+            for _ in range(columns):
+                pos = (((r * width) + c) * channels) + ch
+
+                total = 0
+                if multiple_layers:
+                    total = pixels[pos]
+
+                    # construct color with value only in proper channel
+                    color = [0] * channels
+                    color[ch] = pixels[pos]
+                else:
+                    for i in range(pos, pos+channels):
+                        total += pixels[i]
+
+                    color = pixels[pos: pos+channels]
+
+                layers[-1][-1].append((color[:channels] + padding, total))
+
+                c += col_step
+            r += row_step
+
+    return layers
 
 
 def frame_handler(scene):
@@ -224,6 +304,7 @@ class CSPanel(Panel):
             box.prop(props, "image_start_offset")
             box.prop(props, "image_step")
             box.prop(props, "image_end_offset")
+            box.label(text="Found {} Images".format(len(props.image_sequence_images)), icon="INFO")
         elif props.source_type == "audio":
             box.prop(props, "audio_file")
 
@@ -272,6 +353,19 @@ class CSGenerateMesh(Operator):
 
     def execute(self, context):
         props = context.scene.cs_properties
+
+        frames = []
+        if props.source_type == "image":
+            layers = collect_image_data(props.image, props.row_count, props.column_count, props.create_layers)
+            frames.append(layers)
+        elif props.source_type == "image_sequence":
+            for image in props.image_sequence_images:
+                layers = collect_image_data(image.image, props.row_count, props.column_count, props.create_layers)
+                frames.append(layers)
+        elif props.source_type == "audio":
+            pass
+        else:
+            layers = create_random_data(props.row_count, props.column_count, 1)
 
         return {"FINISHED"}
 
