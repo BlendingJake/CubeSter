@@ -42,12 +42,12 @@ import bmesh
 import logging
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 CACHE = {}  # keep track of loaded images data to allow faster creation the second time around
 
 
 def build_bmesh(vertices: list, faces: list) -> bmesh.types.BMesh:
-    logging.debug("BMESH: {} Vertices, {} Faces".format(len(vertices), len(faces)))
+    logging.info("BMESH: {} Vertices, {} Faces".format(len(vertices), len(faces)))
 
     bm = bmesh.new()
 
@@ -60,6 +60,36 @@ def build_bmesh(vertices: list, faces: list) -> bmesh.types.BMesh:
     bm.faces.ensure_lookup_table()
 
     return bm
+
+
+def center_layer_heights_by_layer(height_layers: List[List[List[Tuple[float, float]]]]) -> None:
+    """
+    Center each layer of points
+    :param height_layers: Layers[Rows[Columns[Tuple[z, height]]]
+    """
+    for layer in height_layers:
+        middle = get_average_height_of_middle(layer)
+
+        # adjust points in layer
+        for r in range(len(layer)):
+            for c in range(len(layer[0])):
+                z, h = layer[r][c]
+                layer[r][c] = (middle - h/2, h)
+
+
+def center_layer_heights_overall(height_layers: List[List[List[Tuple[float, float]]]]) -> None:
+    """
+    Center a whole pillar of points around z=0
+    :param height_layers: Layers[Rows[Columns[Tuple[z, height]]]
+    """
+    for r in range(len(height_layers[0])):
+        for c in range(len(height_layers[0][0])):
+            highest = sum(height_layers[-1][r][c])  # z+height of top layer
+            shift = highest / 2
+
+            for l in range(len(height_layers)):
+                z, h = height_layers[l][r][c]
+                height_layers[l][r][c] = (z-shift, h)
 
 
 def create_block_geometry(height_layers, height_factor: float, xy: float, spacing: float, dims: Tuple[int, int]
@@ -104,18 +134,18 @@ def create_block_geometry(height_layers, height_factor: float, xy: float, spacin
 
             p += 8
 
-    logging.debug("Blocks: {} Vertices, {} Faces".format(len(verts), len(faces)))
+    logging.info("Blocks: {} Vertices, {} Faces".format(len(verts), len(faces)))
 
     return verts, faces
 
 
-def create_random_data(rows: int, columns: int, layer_count) -> List[List[List[Tuple[float, float]]]]:
+def create_random_data(rows: int, columns: int, layer_count) -> List[List[List[float]]]:
     """
     Create the random heights and colors needed.
     :param rows: the number of rows to create data for
     :param columns: the number of columns to create data for
     :param layer_count: the number of layers to create data for
-    :return: Layers[Rows[Columns[Tuple[z, height]]]
+    :return: Layers[Rows[Columns[height]]
     """
     height_layers = []
     for layer_i in range(layer_count):
@@ -126,26 +156,20 @@ def create_random_data(rows: int, columns: int, layer_count) -> List[List[List[T
 
             for c in range(columns):
                 height = uniform(0, 1)
-
-                if layer_i >= 1:
-                    z = height_layers[-2][r][c][0] + height_layers[-2][r][c][1]  # base + height
-                else:
-                    z = 0
-
-                height_layers[-1][-1].append((z, height))
+                height_layers[-1][-1].append(height)
 
     return height_layers
 
 
 def collect_image_data(image: Image, rows: int, columns: int, multiple_layers: bool
-                       ) -> Tuple[List[List[List[list]]], List[List[List[Tuple[float, float]]]]]:
+                       ) -> Tuple[List[List[List[list]]], List[List[List[float]]]]:
     """
     Collect height and color data from the given image
     :param image: the image to get the data from
     :param rows: the number of rows to collect data on
     :param columns: the number of columns to collect data on
     :param multiple_layers: whether to split the color channels in distinct layers or to combine them into one
-    :return: Layers[Rows[Columns[color]]], Layers[Rows[Columns[Tuple(bottom z, height)]]]
+    :return: Layers[Rows[Columns[color]]], Layers[Rows[Columns[height]]]
     """
     if image.name in CACHE:
         pixels = CACHE[image.name]
@@ -181,34 +205,32 @@ def collect_image_data(image: Image, rows: int, columns: int, multiple_layers: b
                     # construct color with value only in proper channel
                     color = [0] * channels
                     color[layer_i] = pixels[pos]
-
-                    # determine z height for bottom of this layer
-                    cur_r, cur_c = len(height_layers[-1]) - 1, len(height_layers[-1][-1]) - 1
-                    if layer_i >= 1:
-                        z = height_layers[-2][cur_r][cur_c][0] + height_layers[-2][cur_r][cur_c][1]  # z + height
-                    else:
-                        z = 0
-
                 else:
-                    z = 0
                     for i in range(pos, pos+channels):
                         height += pixels[i]
 
                     color = pixels[pos: pos+channels]
 
                 color_layers[-1][-1].append(color[:channels] + padding)
-                height_layers[-1][-1].append((z, height))
+                height_layers[-1][-1].append(height)
 
                 c += col_step
             r += row_step
 
-    logging.debug("Image {}: {} Layers, {} Rows, {} Columns".format(image.name, len(color_layers),
-                                                                    len(color_layers[-1]), len(color_layers[-1][-1])))
+    logging.info("Image {}: {} Layers, {} Rows, {} Columns".format(image.name, len(color_layers),
+                                                                   len(color_layers[-1]), len(color_layers[-1][-1])))
+
+    # DEBUGGING
+    debug_layer_heights = []
+    for layer in height_layers:
+        debug_layer_heights.append(layer[0][0])
+
+    logging.debug("Layer Heights at (0, 0): {}".format(debug_layer_heights))
 
     return color_layers, height_layers
 
 
-def frame_handler(scene):
+def frame_handler(scene) -> None:
     pass
 
 
@@ -243,10 +265,76 @@ def generate_linear_colors(layers: int, rows: int, cols: int, height_layers, min
     return color_layers
 
 
+def generate_distinct_layer_heights(height_layers, layer_offset) -> None:
+    """
+    Create pairs of (z, height) for every point, assuming subsequent layers all have the same bottom z.
+    Transforms Layers[Rows[Columns[height]]] to Layers[Rows[Columns[Tuple[z, height]]]]
+    :param height_layers: Layers[Rows[Columns[height]]]
+    :param layer_offset: the space between layers
+    """
+    z = 0
+    for layer in height_layers:
+        _, _max = get_min_max_height(layer)
+        for r in range(len(layer)):
+            for c in range(len(layer[0])):
+                height = layer[r][c]
+                layer[r][c] = (z, height)
+
+        z += _max + layer_offset
+
+
+def generate_stacked_layer_heights(height_layers, layer_offset) -> None:
+    """
+    Create pairs of (z, height) for every point, assuming subsequent layers are stacked on each other.
+    Transforms Layers[Rows[Columns[height]]] to Layers[Rows[Columns[Tuple[z, height]]]]
+    :param height_layers: Layers[Rows[Columns[height]]]
+    :param layer_offset: the space between layers
+    """
+    for r in range(len(height_layers[0])):
+        for c in range(len(height_layers[0][0])):
+            z = 0
+            for l in range(len(height_layers)):
+                height = height_layers[l][r][c]
+                height_layers[l][r][c] = (z, height)
+
+                z += height + layer_offset
+
+
+def get_average_height_of_middle(layer: List[List[Tuple[float, float]]]) -> float:
+    """
+    Find the average height of the middle of the layer of points
+    :param layer: Rows[Columns[Tuple[z, height]]]
+    :return: the average height of the middle of the layer
+    """
+    total = 0
+    for row in layer:
+        for z, height in row:
+            total += z + height/2
+
+    return total / (len(layer) * len(layer[0]))
+
+
+def get_min_max_height(layer: List[List[float]]) -> Tuple[float, float]:
+    """
+    Determine the max and min height for a given height layer
+    :param layer: Rows[Columns[height]]
+    :return: min, max
+    """
+    _min, _max = layer[0][0], layer[0][0]  # assume first is min and max
+    for row in layer:
+        for height in row:
+            if height > _max:
+                _max = height
+            elif height < _min:
+                _min = height
+
+    return _min, _max
+
+
 def invert_all_heights(frames, max_value: float, dims: Tuple[int, int]) -> None:
     """
     Invert all the heights
-    :param frames: Frames[Frame Data[Color Layers, Height Layers[Rows[Columns[Tuple[z, height]]]]]]
+    :param frames: Frames[Frame Data[Color Layers, Height Layers[Rows[Columns[height]]]]]
     :param max_value: the maximum value possible to allow inversion
     :param dims: the row and column counts, respectively
     """
@@ -256,13 +344,8 @@ def invert_all_heights(frames, max_value: float, dims: Tuple[int, int]) -> None:
         for l in range(len(height_layers)):
             for r in range(rows):
                 for c in range(cols):
-                    z, height = height_layers[l][r][c]
-                    height = max_value - height  # invert
-
-                    if l >= 1:  # if not the first layer
-                        z = height_layers[-2][r][c][0] + height_layers[-2][r][c][1]  # update z to be above lower level
-
-                    height_layers[l][r][c] = (z, height)
+                    new_height = max_value - height_layers[l][r][c]  # invert
+                    height_layers[l][r][c] = new_height
 
 
 # PROPERTIES ----------------------------------------------------
@@ -369,7 +452,7 @@ class CSSceneProperties(PropertyGroup):
 
     # SCALING
     height: FloatProperty(
-        name="Height", min=0, default=0.25,
+        name="Height", min=0, default=0.25, unit="LENGTH",
         description="Height of max value"
     )
 
@@ -390,12 +473,12 @@ class CSSceneProperties(PropertyGroup):
     )
 
     layer_offset: FloatProperty(
-        name="Layer Offset", min=0, default=0
+        name="Layer Offset", min=0, default=0, unit="LENGTH"
     )
 
     centering: EnumProperty(
         name="Centering",
-        items=(("none", "None", ""), ("overall", "Overall", ""), ("per_layer", "Per Layer", "")),
+        items=(("none", "None", ""), ("overall", "Overall", ""), ("by_layer", "By Layer", "")),
         default="none"
     )
 
@@ -500,7 +583,7 @@ class CSPanel(Panel):
             box.separator()
             box.prop(props, "layer_style")
             box.prop(props, "layer_offset")
-            box.prop(props, "centering")
+        box.prop(props, "centering")
 
         # COLORING
         box = layout.box()
@@ -540,18 +623,38 @@ class CSGenerateMesh(Operator):
             heights = create_random_data(props.row_count, props.column_count, props.random_layer_count)
             frames.append([[], heights])
 
-        logging.debug("{} Frames, {} Layers, {} Rows, {} Columns".format(len(frames), len(frames[0][0]),
-                                                                         len(frames[0][0][0]), len(frames[0][0][0][0])))
+        logging.info("{} Frames, {} Layers, {} Rows, {} Columns".format(len(frames), len(frames[0][0]),
+                                                                        len(frames[0][0][0]), len(frames[0][0][0][0])))
 
         # SCALING
         if props.source_type == "audio":
             max_value = props.max_freq
         else:
-            max_value = 1 if props.create_layers else props.image.channels
+            max_value = props.image.channels
         height_factor = props.height / max_value
 
         if props.invert_heights:
             invert_all_heights(frames, max_value, dims)
+
+        # LAYERS
+        if props.create_layers:
+            # adjust layer offset to take height factor into account, layer_offset needs to be absolute
+            adjusted_layer_offset = props.layer_offset / height_factor
+
+            for _, heights in frames:
+                if props.layer_style == "stacked":
+                    generate_stacked_layer_heights(heights, adjusted_layer_offset)
+                else:
+                    generate_distinct_layer_heights(heights, adjusted_layer_offset)
+        else:  # if only a single layer, still set up the (z, height) pairs
+            for _, heights in frames:
+                generate_stacked_layer_heights(heights, 0)
+
+        for _, heights in frames:
+            if props.centering == "overall":
+                center_layer_heights_overall(heights)
+            elif props.centering == "by_layer":
+                center_layer_heights_by_layer(heights)
 
         # COLORING
         if props.coloring_type == "from_source":
