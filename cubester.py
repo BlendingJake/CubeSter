@@ -92,6 +92,93 @@ def center_layer_heights_overall(height_layers: List[List[List[Tuple[float, floa
                 height_layers[l][r][c] = (z-shift, h)
 
 
+def collect_image_data(image: Image, rows: int, columns: int, multiple_layers: bool
+                       ) -> Tuple[List[List[List[list]]], List[List[List[float]]]]:
+    """
+    Collect height and color data from the given image
+    :param image: the image to get the data from
+    :param rows: the number of rows to collect data on
+    :param columns: the number of columns to collect data on
+    :param multiple_layers: whether to split the color channels in distinct layers or to combine them into one
+    :return: Layers[Rows[Columns[color]]], Layers[Rows[Columns[height]]]
+    """
+    if image.name in CACHE:
+        pixels = CACHE[image.name]
+    else:
+        pixels = list(image.pixels)
+        CACHE[image.name] = pixels
+
+    width, height = image.size
+    row_step, col_step = height // rows, width // columns
+    channels = image.channels
+    padding = [0] * (4 - channels)  # amount of padding needed to make sure all colors are RGBA
+
+    color_layers = []
+    height_layers = []
+    layer_count = channels if multiple_layers else 1
+    for layer_i in range(layer_count):
+        color_layers.append([])
+        height_layers.append([])
+
+        r = 0
+        for _ in range(rows):  # manually run loop to ensure that exactly the right number of rows is created
+            color_layers[-1].append([])
+            height_layers[-1].append([])
+
+            c = 0
+            for _ in range(columns):
+                pos = (((r * width) + c) * channels) + layer_i
+
+                height = 0
+                if multiple_layers:
+                    height = pixels[pos]
+
+                    # construct color with value only in proper channel
+                    color = [0] * channels
+                    color[layer_i] = pixels[pos]
+                else:
+                    for i in range(pos, pos+channels):
+                        height += pixels[i]
+
+                    color = pixels[pos: pos+channels]
+
+                color_layers[-1][-1].append(color[:channels] + padding)
+                height_layers[-1][-1].append(height)
+
+                c += col_step
+            r += row_step
+
+    logging.info("Image {}: {} Layers, {} Rows, {} Columns".format(image.name, len(color_layers),
+                                                                   len(color_layers[-1]), len(color_layers[-1][-1])))
+
+    # DEBUGGING
+    debug_layer_heights = []
+    for layer in height_layers:
+        debug_layer_heights.append(layer[0][0])
+
+    logging.debug("Layer Heights at (0, 0): {}".format(debug_layer_heights))
+
+    return color_layers, height_layers
+
+
+def color_vertex_layer(vertex_layer, color_layers, rows: int, cols: int, steps: int) -> None:
+    """
+    Assign the correct colors to the vertex color layer
+    :param vertex_layer: The vertex color layer
+    :param color_layers: the color layers to assign
+    :param rows: the number of rows the will be used in coloring
+    :param cols: the number of columns to use in coloring
+    :param steps: the number of vertices for each color
+    """
+    i = 0
+    for layer in color_layers:
+        for r in range(rows):
+            for c in range(cols):
+                for _ in range(steps):
+                    vertex_layer[i].color = layer[r][c]
+                    i += 1
+
+
 def create_block_geometry(height_layers, height_factor: float, xy: float, spacing: float, dims: Tuple[int, int]
                           ) -> Tuple[list, list]:
     """
@@ -161,73 +248,20 @@ def create_random_data(rows: int, columns: int, layer_count) -> List[List[List[f
     return height_layers
 
 
-def collect_image_data(image: Image, rows: int, columns: int, multiple_layers: bool
-                       ) -> Tuple[List[List[List[list]]], List[List[List[float]]]]:
+def create_vertex_material():
     """
-    Collect height and color data from the given image
-    :param image: the image to get the data from
-    :param rows: the number of rows to collect data on
-    :param columns: the number of columns to collect data on
-    :param multiple_layers: whether to split the color channels in distinct layers or to combine them into one
-    :return: Layers[Rows[Columns[color]]], Layers[Rows[Columns[height]]]
+    Create a material called 'CubeSter' that uses the vertex color layer named 'Col' for the colors of the material
     """
-    if image.name in CACHE:
-        pixels = CACHE[image.name]
-    else:
-        pixels = list(image.pixels)
-        CACHE[image.name] = pixels
+    mat = bpy.data.materials.new("CubeSter")
+    mat.use_nodes = True
 
-    width, height = image.size
-    row_step, col_step = height // rows, width // columns
-    channels = image.channels
-    padding = [0] * (4 - channels)  # amount of padding needed to make sure all colors are RGBA
+    nodes = mat.node_tree.nodes
 
-    color_layers = []
-    height_layers = []
-    layer_count = channels if multiple_layers else 1
-    for layer_i in range(layer_count):
-        color_layers.append([])
-        height_layers.append([])
+    att = nodes.new("ShaderNodeAttribute")
+    att.location = (-275, 275)
+    att.attribute_name = "Col"
 
-        r = 0
-        for _ in range(rows):  # manually run loop to ensure that exactly the right number of rows is created
-            color_layers[-1].append([])
-            height_layers[-1].append([])
-
-            c = 0
-            for _ in range(columns):
-                pos = (((r * width) + c) * channels) + layer_i
-
-                height = 0
-                if multiple_layers:
-                    height = pixels[pos]
-
-                    # construct color with value only in proper channel
-                    color = [0] * channels
-                    color[layer_i] = pixels[pos]
-                else:
-                    for i in range(pos, pos+channels):
-                        height += pixels[i]
-
-                    color = pixels[pos: pos+channels]
-
-                color_layers[-1][-1].append(color[:channels] + padding)
-                height_layers[-1][-1].append(height)
-
-                c += col_step
-            r += row_step
-
-    logging.info("Image {}: {} Layers, {} Rows, {} Columns".format(image.name, len(color_layers),
-                                                                   len(color_layers[-1]), len(color_layers[-1][-1])))
-
-    # DEBUGGING
-    debug_layer_heights = []
-    for layer in height_layers:
-        debug_layer_heights.append(layer[0][0])
-
-    logging.debug("Layer Heights at (0, 0): {}".format(debug_layer_heights))
-
-    return color_layers, height_layers
+    mat.node_tree.links.new(att.outputs[0], nodes["Principled BSDF"].inputs[0])
 
 
 def frame_handler(scene) -> None:
@@ -618,6 +652,7 @@ class CSGenerateMesh(Operator):
                                                      props.create_layers)
                 frames.append([colors, heights])
         elif props.source_type == "audio":
+            # TODO: get height data from an audio file
             pass
         else:
             heights = create_random_data(props.row_count, props.column_count, props.random_layer_count)
@@ -667,6 +702,7 @@ class CSGenerateMesh(Operator):
                                                   props.linear_min_color, props.linear_max_color,
                                                   0, max_height)
         elif props.coloring_type == "random":
+            # TODO: allow random coloring
             pass
 
         # MESH
@@ -676,11 +712,32 @@ class CSGenerateMesh(Operator):
             verts, faces = create_block_geometry(frames[0][1], height_factor, props.xy_size, props.instance_spacing,
                                                  dims)
         else:
+            # TODO: collect random object's geometry
             verts, faces = [], []
 
         bm = build_bmesh(verts, faces)
         bpy.ops.mesh.primitive_cube_add()
         bm.to_mesh(context.object.data)
+
+        # MATERIALS
+        if "CubeSter" not in bpy.data.materials:
+            create_vertex_material()
+        context.object.data.materials.append(bpy.data.materials["CubeSter"])
+
+        # APPLY [INITIAL] COLORS TO OBJECT
+        bpy.ops.mesh.vertex_color_add()
+        layer = context.object.data.vertex_colors[0].data
+
+        if props.mesh_type == "point":
+            color_vertex_layer(layer, frames[0][0], props.row_count-1, props.column_count-1, 4)
+        elif props.mesh_type == "block":
+            color_vertex_layer(layer, frames[0][0], props.row_count, props.column_count, 24)
+        else:
+            vertex_face_count = 0  # figure out the number of vertices and how many faces they are apart of
+            for f in faces:
+                vertex_face_count += len(f)
+
+            color_vertex_layer(layer, frames[0][0], props.row_count, props.column_count, vertex_face_count)
 
         return {"FINISHED"}
 
